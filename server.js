@@ -24,7 +24,6 @@ const allowedOrigins = [
   'https://oy-s-frontend-git-master-brandon-gonsales-projects.vercel.app',
   'https://oy-s-frontend-git-develop-brandon-gonsales-projects.vercel.app',               
   'http://localhost:3000',
-  'http://localhost:3001',
   "https://oy-s-frontend.vercel.app"
 ];
 
