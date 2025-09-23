@@ -1,60 +1,22 @@
+// En: backend/routes/userRoutes.js
+
 const express = require('express');
 const router = express.Router();
-const jwt = require('jsonwebtoken');
-const User = require('../models/User');
-const { protect } = require('../middleware/authMiddleware'); 
 
-const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
-};
+// Importamos las funciones del controlador que contendrán la lógica
+const {
+    registerUser,
+    loginUser,
+    getMe
+} = require('../controllers/userController');
 
-router.post('/register', async (req, res) => {
-  const { name, email, password } = req.body;
-  try {
-    const userExists = await User.findOne({ email });
-    if (userExists) return res.status(400).json({ message: 'El usuario ya existe' });
-    const user = await User.create({ name, email, password });
-    if (user) {
-      res.status(201).json({
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        token: generateToken(user._id),
-      });
-    } else {
-      res.status(400).json({ message: 'Datos de usuario inválidos' });
-    }
-  } catch (error) {
-    res.status(500).json({ message: 'Error del servidor', error: error.message });
-  }
-});
+// Importamos el middleware de protección
+const { protect } = require('../middleware/authMiddleware');
 
-router.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-  try {
-    const user = await User.findOne({ email }).select('+password');
-    if (user && (await user.matchPassword(password))) {
-      res.json({
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        token: generateToken(user._id),
-      });
-    } else {
-      res.status(401).json({ message: 'Email o contraseña inválidos' });
-    }
-  } catch (error) {
-    res.status(500).json({ message: 'Error del servidor', error: error.message });
-  }
-});
+// Definimos las rutas y las asociamos con su función lógica
+router.post('/register', registerUser);
+router.post('/login', loginUser);
+router.get('/me', protect, getMe); // La ruta de perfil ahora se llamará 'me' para mayor claridad
 
-
-router.get('/profile', protect, async (req, res) => {
-    res.status(200).json({
-        _id: req.user._id,
-        name: req.user.name,
-        email: req.user.email,
-    });
-});
-
+// Exportamos el router
 module.exports = router;
