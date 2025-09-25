@@ -1,0 +1,119 @@
+## 🚀 Guía de Ejecución en Local
+
+Sigue estos pasos para configurar y ejecutar el servidor de backend en tu máquina de desarrollo.
+
+### Prerrequisitos
+
+Asegúrate de tener instalado lo siguiente:
+*   [Node.js](https://nodejs.org/) (versión 18 o superior)
+*   [npm](https://www.npmjs.com/) (generalmente se instala con Node.js)
+*   [Google Cloud CLI (gcloud)](https://cloud.google.com/sdk/docs/install)
+*   Un proyecto de Google Cloud ya configurado con todas las APIs y servicios necesarios (Firestore, Vertex AI, Cloud Storage).
+
+### 1. Clonar el Repositorio
+
+Primero, clona el repositorio en tu máquina local y navega a la carpeta del backend.
+```bash
+git clone <URL_DEL_REPOSITORIO>
+cd <NOMBRE_DEL_PROYECTO>/backend
+```
+
+### 2. Instalar Dependencias
+
+Instala todas las librerías necesarias para el proyecto.
+```bash
+npm install
+```
+
+### 3. Configurar Variables de Entorno
+
+La aplicación utiliza un archivo `.env` para gestionar las credenciales y configuraciones.
+
+1.  Crea un archivo llamado `.env` en la raíz de la carpeta `backend`.
+2.  Copia el contenido del archivo `.env.example` (si existe) o usa la siguiente plantilla y rellena cada una de las variables:
+
+```env
+# ===================================================
+#      VARIABLES DE CONFIGURACIÓN DEL SERVIDOR
+# ===================================================
+# Puerto para la ejecución local
+PORT=5000
+
+# Secreto para firmar los JSON Web Tokens (JWT)
+JWT_SECRET=tu_secreto_para_jwt
+
+# Clave secreta para activar el modo superusuario en el chat
+SUPERUSER_SECRET=tu_clave_de_superusuario
+
+
+# ===================================================
+#       CONFIGURACIÓN DE GOOGLE CLOUD PLATFORM
+# ===================================================
+# El ID de tu proyecto de Google Cloud (ej. oys-assistant)
+GOOGLE_CLOUD_PROJECT=ID_DE_TU_PROYECTO
+
+# La región que elegiste para tus servicios (ej. us-central1)
+GOOGLE_CLOUD_LOCATION=TU_REGION
+
+# El nombre exacto de tu bucket de Cloud Storage
+GCS_BUCKET_NAME=NOMBRE_DE_TU_BUCKET
+
+
+# ===================================================
+#       CONFIGURACIÓN DE VERTEX AI VECTOR SEARCH
+# ===================================================
+# La ruta completa del punto de conexión. Debe estar entre comillas simples.
+# (ej. 'projects/123/locations/us-central1/indexEndpoints/456')
+VERTEX_AI_INDEX_ENDPOINT='RUTA_DEL_EXTREMO_DE_INDICE'
+
+# El ID que le diste a tu índice desplegado.
+VERTEX_AI_DEPLOYED_INDEX_ID=deployed_index_v1
+```
+
+### 4. Configurar Autenticación Local
+
+Para que tu máquina local pueda comunicarse de forma segura con los servicios de Google Cloud, necesita un archivo de credenciales.
+
+**a. Generar la Clave de Servicio:**
+1.  Ve a la **Consola de Google Cloud** -> **IAM y administración** -> **Cuentas de servicio**.
+2.  Haz clic en la cuenta de servicio que creaste (ej. `oys-backend-runner@...`).
+3.  Ve a la pestaña **CLAVES**.
+4.  Haz clic en **AGREGAR CLAVE** -> **Crear clave nueva**.
+5.  Selecciona **JSON** y haz clic en **CREAR**. Se descargará un archivo.
+
+**b. Guardar la Clave de Forma Segura:**
+1.  Crea una carpeta **fuera** de tu proyecto para guardar esta clave (ej. `C:/gcp-keys/`).
+2.  Mueve el archivo descargado a esa carpeta y renómbralo a `gcp-credentials.json`.
+3.  **⚠️ Seguridad:** ¡Nunca subas este archivo a GitHub! Trátalo como una contraseña.
+
+**c. Establecer la Variable de Entorno:**
+Abre una terminal en la carpeta `backend` y ejecuta el siguiente comando para que tu sesión sepa dónde encontrar las credenciales. Reemplaza la ruta con la tuya.
+
+*   **En PowerShell (Windows):**
+    ```powershell
+    $env:GOOGLE_APPLICATION_CREDENTIALS="C:\gcp-keys\gcp-credentials.json"
+    ```
+*   **En Bash/Zsh (Mac/Linux):**
+    ```bash
+    export GOOGLE_APPLICATION_CREDENTIALS="/ruta/a/tus/gcp-credentials.json"
+    ```
+**Nota:** Esta variable solo se establece para la sesión de terminal actual. Si la cierras, deberás volver a ejecutar este comando.
+
+### 5. Ejecutar el Servidor
+
+Una vez configurado todo lo anterior, inicia el servidor desde la misma terminal donde estableciste la variable de autenticación.
+
+```bash
+npm start
+```
+Si no tienes un script "start" en tu `package.json`, usa:
+```bash
+node server.js
+```
+
+Deberías ver el siguiente mensaje, indicando que todo ha funcionado correctamente:
+```
+Servidor backend corriendo en http://localhost:5000
+```
+
+¡Listo! Ahora puedes conectar tu frontend a esta dirección y comenzar a desarrollar.
