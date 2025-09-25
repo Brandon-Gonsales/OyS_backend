@@ -3,7 +3,8 @@
 // --- SECCIÓN 1: IMPORTACIONES ---
 // Importamos los SDKs (Software Development Kits) de Google Cloud que instalamos.
 const admin = require('firebase-admin');
-const { VertexAI, MatchServiceClient } = require('@google-cloud/aiplatform');
+const { VertexAI } = require('@google-cloud/vertexai'); // <-- Para los modelos generativos
+const { MatchServiceClient } = require('@google-cloud/aiplatform'); // <-- Para Vector Search
 const { Storage } = require('@google-cloud/storage');
 
 // --- SECCIÓN 2: INICIALIZACIÓN DE SERVICIOS ---

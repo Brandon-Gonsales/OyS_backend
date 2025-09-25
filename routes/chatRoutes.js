@@ -18,8 +18,8 @@ const {
     updateChatTitle,
     processDocuments,
     handleChatMessage,
-    extractJson,
-    generateReport
+    //extractJson,
+    //generateReport
 } = require('../controllers/chatController');
 
 
@@ -49,8 +49,8 @@ router.put('/:id/title', protect, updateChatTitle); // PUT /api/chats/:id/title 
 // Rutas de acciones específicas
 router.post('/process-document', protect, upload, processDocuments);  // Subir y procesar documentos para un chat
 router.post('/message', protect, handleChatMessage);                 // Enviar un nuevo mensaje a un chat
-router.post('/extract-json', protect, singleUpload, extractJson);      // Extraer JSON de un documento
-router.post('/generate-report', protect, generateReport);            // Generar un informe para un chat
+//router.post('/extract-json', protect, singleUpload, extractJson);      // Extraer JSON de un documento
+//router.post('/generate-report', protect, generateReport);            // Generar un informe para un chat
 
 // --- SECCIÓN 5: EXPORTACIÓN ---
 // Exportamos el router para que nuestro server.js principal pueda usarlo.
