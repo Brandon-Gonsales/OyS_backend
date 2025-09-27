@@ -24,11 +24,14 @@ const vertex_ai = new VertexAI({
     location: process.env.GOOGLE_CLOUD_LOCATION
 });
 
-// Obtener los modelos de IA específicos que usaremos.
-// Usamos los nombres oficiales y estables para producción.
-const generativeModel = vertex_ai.getGenerativeModel({ model: "gemini-2.5-pro" });
-const visionGenerativeModel = vertex_ai.getGenerativeModel({ model: "gemini-2.5-pro" });
-const embeddingModel = vertex_ai.getGenerativeModel({ model: "embedding-001" });
+// Usamos los nombres de los modelos estables y ampliamente disponibles.
+const generativeModel = vertex_ai.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+// Para el modelo de visión, usamos la versión estable equivalente.
+const visionGenerativeModel = vertex_ai.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+// Nos aseguramos de que el modelo de embedding sea el correcto y recomendado.
+const embeddingModel = vertex_ai.getGenerativeModel({ model: "text-embedding-004" });
 
 // Inicializar el cliente específico para hacer búsquedas en Vertex AI Vector Search.
 const matchServiceClient = new MatchServiceClient();
