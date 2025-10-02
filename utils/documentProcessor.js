@@ -1,18 +1,13 @@
 // En: backend/utils/documentProcessor.js
-
 const path = require('path');
 const mammoth = require("mammoth");
 const xlsx = require('xlsx');
 const pdf = require('pdf-parse');
 const axios = require('axios');
-const FormData = require('form-data');
+const { GoogleAuth } = require('google-auth-library');  
 
 // Importamos los servicios de IA desde nuestra configuración central
-const {
-    visionGenerativeModel,
-    embeddingModel,
-    matchServiceClient
-} = require('../config/db');
+const { visionGenerativeModel, pineconeIndex } = require('../config/db');
 
 // --- FUNCIONES DE PROCESAMIENTO DE TEXTO Y ARCHIVOS ---
 
@@ -80,14 +75,44 @@ const extractTextFromFile = async (fileBuffer, clientMimeType, originalName) => 
  * @param {string} text - El texto a convertir en embedding.
  * @returns {Promise<number[]>} El vector de embedding.
  */
+
+
 const getEmbedding = async (text) => {
     try {
-        const result = await embeddingModel.embedContent({
-            contents: [{ role: 'user', parts: [{ text: text }] }]
+        // --- LA SOLUCIÓN DEFINITIVA USANDO HTTP DIRECTO ---
+
+        // 1. Obtenemos las credenciales y el token de acceso automáticamente.
+        //    Esto funciona tanto en local (con la variable de entorno) como en Cloud Run.
+        const auth = new GoogleAuth({
+            scopes: 'https://www.googleapis.com/auth/cloud-platform'
         });
-        return result.predictions[0].embeddings.values;
+        const client = await auth.getClient();
+        const accessToken = (await client.getAccessToken()).token;
+
+        // 2. Definimos el endpoint y el cuerpo de la petición, tal como en la documentación.
+        const projectId = process.env.GOOGLE_CLOUD_PROJECT;
+        const url = `https://us-central1-aiplatform.googleapis.com/v1/projects/${projectId}/locations/us-central1/publishers/google/models/text-embedding-004:predict`;
+        
+        const data = {
+            instances: [
+                { content: text }
+            ]
+        };
+
+        // 3. Hacemos la llamada a la API con Axios, incluyendo el token de autorización.
+        const response = await axios.post(url, data, {
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        // 4. Extraemos el embedding de la respuesta.
+        return response.data.predictions[0].embeddings.values;
+
     } catch (error) {
-        console.error("Error al generar embedding:", error);
+        // Mejoramos el log de error para ver la respuesta de la API si falla.
+        console.error("Error al generar embedding:", error.response ? error.response.data : error.message);
         throw new Error("No se pudo generar el embedding.");
     }
 };
@@ -105,46 +130,49 @@ const chunkDocument = (text, chunkSize = 1000, overlap = 200) => {
     return chunks;
 };
 
+// --- (NUEVAS FUNCIONES PARA PINECONE) ---
+
 /**
- * @desc Busca los chunks de documentos más relevantes en Vertex AI Vector Search.
- * @param {number[]} queryEmbedding - El embedding de la pregunta del usuario.
- * @param {string[]} documentIds - Los IDs de los documentos en los que buscar.
- * @returns {Promise<string[]>} Un array con el texto de los chunks relevantes.
+ * @desc (NUEVO) Sube los vectores a Pinecone.
+ * @param {Array<object>} vectors - Un array de objetos vectoriales para Pinecone.
  */
-const findRelevantChunksAcrossDocuments = async (queryEmbedding, documentIds, topK = 5) => {
-    if (!documentIds || documentIds.length === 0) return [];
-
-    const indexEndpoint = process.env.VERTEX_AI_INDEX_ENDPOINT;
-    const deployedIndexId = process.env.VERTEX_AI_DEPLOYED_INDEX_ID;
-
-    const request = {
-        indexEndpoint: indexEndpoint,
-        deployedIndexId: deployedIndexId,
-        queries: [{
-            vector: queryEmbedding,
-            topNeighborCount: topK,
-            stringFilter: [{ name: 'documentId', allowList: documentIds }]
-        }]
-    };
-
+const upsertToPinecone = async (vectors) => {
+    if (!vectors || vectors.length === 0) return;
     try {
-        const [response] = await matchServiceClient.findNeighbors(request);
-        const neighbors = response.nearestNeighbors?.[0]?.neighbors;
-        if (!neighbors || neighbors.length === 0) return [];
-        
-        // Esta parte es CRÍTICA: Vector Search no devuelve metadatos como Pinecone.
-        // La mejor práctica es recuperar los IDs de los chunks y luego buscar su contenido en Firestore.
-        // Asumiremos que tenemos una colección 'documentChunks' para este propósito.
-        const chunkIds = neighbors.map(n => n.datapoint.datapointId);
-        // (Aquí iría la lógica para buscar estos IDs en una colección de Firestore)
-        // Por ahora, devolvemos un texto de marcador de posición.
-        return chunkIds.map(id => `Texto del chunk con ID: ${id}`); // <<-- NECESITA AJUSTE CON LA BD
+        console.log(`[Pinecone] Subiendo ${vectors.length} vectores...`);
+        // Usamos el pineconeIndex que importamos desde nuestra configuración.
+        await pineconeIndex.upsert(vectors);
+        console.log("[Pinecone] Subida completada con éxito.");
     } catch (error) {
-        console.error("[Vertex AI] Error al realizar la búsqueda de vectores:", error);
-        return [];
+        console.error("[Pinecone] Error al subir los vectores:", error);
+        throw new Error("No se pudieron guardar los embeddings en Pinecone.");
     }
 };
 
+/**
+ * @desc (CORREGIDO) Busca los chunks de documentos más relevantes en Pinecone.
+ */
+const findRelevantChunksAcrossDocuments = async (queryEmbedding, documentIds, topK = 5) => {
+    if (!documentIds || documentIds.length === 0) return [];
+    try {
+        console.log(`[Pinecone] Buscando en los documentos: ${documentIds.join(', ')}`);
+        const queryResponse = await pineconeIndex.query({
+            topK,
+            vector: queryEmbedding,
+            filter: { documentId: { "$in": documentIds } },
+            includeMetadata: true,
+        });
+
+        if (queryResponse.matches?.length) {
+            // Pinecone devuelve los metadatos, así que podemos extraer el texto directamente.
+            return queryResponse.matches.map(match => match.metadata.chunkText);
+        }
+        return [];
+    } catch (error) {
+        console.error("[Pinecone] Error al realizar la búsqueda:", error);
+        return [];
+    }
+};
 
 // --- FUNCIONES AUXILIARES DE GEMINI ---
 
@@ -163,10 +191,11 @@ async function describeImageWithGemini(fileBuffer, mimetype, originalName) {
 }
 
 
-// --- EXPORTACIONES ---
+// --- SECCIÓN 5: EXPORTACIONES ---
 module.exports = {
     extractTextFromFile,
     getEmbedding,
     chunkDocument,
-    findRelevantChunksAcrossDocuments
+    findRelevantChunksAcrossDocuments, // Ahora usa Pinecone
+    upsertToPinecone // La nueva función de subida para Pinecone
 };

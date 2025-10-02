@@ -1,8 +1,7 @@
 // En: backend/controllers/chatController.js
-
 // --- SECCIÓN 1: IMPORTACIONES ---
 const { db, admin, generativeModel, bucket } = require('../config/db');
-const { extractTextFromFile, getEmbedding, chunkDocument, findRelevantChunksAcrossDocuments } = require('../utils/documentProcessor');
+const { extractTextFromFile, getEmbedding, chunkDocument, findRelevantChunksAcrossDocuments, upsertToPinecone } = require('../utils/documentProcessor');
 
 
 // --- SECCIÓN 2: LÓGICA DE RUTAS (CRUD BÁSICO) ---
@@ -52,24 +51,29 @@ const createChat = async (req, res) => {
         const newChatData = {
             title: 'Nuevo Chat',
             messages: [],
+            documents: [],
             userId: req.user._id,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            activeContext: 'miscellaneous' 
         };
 
         const newChatRef = await db.collection('chats').add(newChatData);
-
-        console.log(`Nuevo chat creado con ID: ${newChatRef.id}`);
-        res.status(201).json({ 
-            _id: newChatRef.id, 
-            ...newChatData 
+        const savedChatDoc = await newChatRef.get();
+        const savedChatData = savedChatDoc.data();
+        
+        console.log(`Nuevo chat creado con ID: ${newChatRef.id} y activeContext: 'miscellaneous'`);
+              res.status(201).json({ 
+            _id: savedChatDoc.id, 
+            ...savedChatData,
+            createdAt: savedChatData.createdAt.toDate(),
+            updatedAt: savedChatData.updatedAt.toDate()
         });
     } catch (error) { 
         console.error("Error al crear chat:", error);
         res.status(500).json({ message: 'Error del servidor al crear chat' }); 
     }
 };
-
 const getChatById = async (req, res) => {
     try {
         const chatDoc = await db.collection('chats').doc(req.params.id).get();
@@ -141,6 +145,11 @@ const processDocuments = async (req, res) => {
     const { chatId, documentType } = req.body;
     if (!req.files || req.files.length === 0) return res.status(400).json({ message: 'No se enviaron archivos.' });
 
+    // Validación para asegurarse de que documentType es una clave válida.
+    if (!documentType || typeof documentType !== 'string') {
+        return res.status(400).json({ message: 'El tipo de documento (contexto) es inválido.' });
+    }
+
     try {
         const chatRef = db.collection('chats').doc(chatId);
         const chatDoc = await chatRef.get();
@@ -148,21 +157,38 @@ const processDocuments = async (req, res) => {
         const isSuperuserMode = chatDoc.data().isSuperuserMode;
 
         for (const file of req.files) {
+            // ... (Lógica de subir a GCS, extraer texto, chunking, generar embeddings y subir a Pinecone se mantiene igual)
             const gcsFileName = `${req.user._id}/${chatId}/${Date.now()}-${file.originalname}`;
             const blob = bucket.file(gcsFileName);
             await blob.save(file.buffer);
-
             const text = await extractTextFromFile(file.buffer, file.mimetype, file.originalname);
             const chunks = chunkDocument(text);
             const documentId = `doc_${chatId}_${Date.now()}`;
             
-            const newDocumentData = { documentId, originalName: file.originalname, gcsPath: gcsFileName, chunkCount: chunks.length, createdAt: admin.firestore.FieldValue.serverTimestamp() };
-            const systemMessage = { sender: 'bot', text: `Archivo "${file.originalname}" procesado y añadido a '${documentType}'.` };
+            const vectorsToUpsert = [];
+            for (let i = 0; i < chunks.length; i++) {
+                const chunk = chunks[i];
+                const embedding = await getEmbedding(chunk);
+                vectorsToUpsert.push({
+                    id: `${documentId}_chunk_${i}`,
+                    values: embedding,
+                    metadata: { documentId, chunkText: chunk }
+                });
+            }
+            if (vectorsToUpsert.length > 0) {
+                await upsertToPinecone(vectorsToUpsert);
+            }
+            
+            // --- ¡LA CORRECCIÓN FINAL Y MÁS IMPORTANTE ESTÁ AQUÍ! ---
+            const newDocumentData = { documentId, originalName: file.originalname, gcsPath: gcsFileName, chunkCount: chunks.length, createdAt: new Date() };
+            const systemMessage = { sender: 'bot', text: `Archivo "${file.originalname}" procesado y añadido al contexto '${documentType}'.`, timestamp: new Date() };
 
             if (isSuperuserMode) {
                 await db.collection('globalDocuments').add({ ...newDocumentData, uploadedBy: req.user._id });
                 await chatRef.update({ messages: admin.firestore.FieldValue.arrayUnion(systemMessage) });
             } else {
+                // Usamos el 'documentType' dinámico que viene del frontend para guardar en el campo correcto.
+                // Ejemplo: Si documentType es 'miscellaneous', guardará en el array 'miscellaneous'.
                 await chatRef.update({
                     [documentType]: admin.firestore.FieldValue.arrayUnion(newDocumentData),
                     messages: admin.firestore.FieldValue.arrayUnion(systemMessage),
@@ -171,14 +197,29 @@ const processDocuments = async (req, res) => {
             }
         }
         
+        // ... (El resto de la función para formatear y enviar la respuesta se mantiene igual)
         const finalChatStateDoc = await chatRef.get();
-        res.status(200).json({ updatedChat: { _id: finalChatStateDoc.id, ...finalChatStateDoc.data() } });
+        const finalChatData = finalChatStateDoc.data();
+        // ... (formateo de timestamps)
+        res.status(200).json({ updatedChat: { _id: finalChatStateDoc.id, ...finalChatData } });
 
     } catch (error) {
         console.error('[processDocuments] Error:', error);
         res.status(500).json({ message: 'Error al procesar los archivos.', details: error.message });
     }
 };
+
+
+// --- FUNCIÓN AUXILIAR PARA RAG (RESTAURADA A TU LÓGICA ORIGINAL) ---
+function getDocumentsForActiveContext(chat) {
+    const contextKey = chat.activeContext;
+    // Esta lógica ahora funcionará porque processDocuments guarda en el campo correcto.
+    if (chat[contextKey] && Array.isArray(chat[contextKey])) {
+        return chat[contextKey].map(doc => doc.documentId);
+    }
+    return [];
+}
+
 
 // --- FUNCIÓN AUXILIAR PARA RAG ---
 // (Esta función la usará handleChatMessage)
@@ -191,7 +232,8 @@ function getDocumentsForActiveContext(chat) {
 }
 
 
-// --- LÓGICA PRINCIPAL DEL CHAT ---
+// En: backend/controllers/chatController.js
+
 const handleChatMessage = async (req, res) => {
     const { conversationHistory, chatId } = req.body;
     if (!chatId || !Array.isArray(conversationHistory)) {
@@ -199,16 +241,15 @@ const handleChatMessage = async (req, res) => {
     }
 
     try {
+        console.log("--- handleChatMessage: INICIO ---");
         const userQuery = conversationHistory[conversationHistory.length - 1].parts[0].text;
         
         const chatRef = db.collection('chats').doc(chatId);
         const chatDoc = await chatRef.get();
-        if (!chatDoc.exists) {
-            return res.status(404).json({ message: "Chat no encontrado." });
-        }
+        if (!chatDoc.exists) { return res.status(404).json({ message: "Chat no encontrado." }); }
         const currentChat = chatDoc.data();
 
-        // --- LÓGICA DE COMANDOS ESPECIALES ---
+        // ...// --- LÓGICA DE COMANDOS ESPECIALES ---
         if (userQuery === process.env.SUPERUSER_SECRET && !currentChat.isSuperuserMode) {
             await chatRef.update({ 
                 isSuperuserMode: true,
@@ -226,66 +267,70 @@ const handleChatMessage = async (req, res) => {
             return res.status(200).json({ updatedChat: { _id: updatedChatDoc.id, ...updatedChatDoc.data() } });
         }
 
-        // --- LÓGICA RAG ---
-        console.log("Iniciando lógica RAG...");
 
-        // 1. Obtener los IDs de los documentos relevantes (se mantiene igual)
+        console.log("--- handleChatMessage: INICIANDO LÓGICA RAG ---");
+
         const documentIdsInChat = getDocumentsForActiveContext(currentChat);
         const globalDocsSnapshot = await db.collection('globalDocuments').get();
         const globalDocumentIds = globalDocsSnapshot.docs.map(doc => doc.data().documentId);
         const allSearchableIds = [...new Set([...documentIdsInChat, ...globalDocumentIds])];
         
-        // --- LA CORRECCIÓN PRINCIPAL ---
-        // El frontend ya envía el historial en el formato correcto {role, parts}.
-        // Simplemente asignamos el historial directamente, sin volver a mapearlo.
         let contents = conversationHistory;
 
         if (allSearchableIds.length > 0) {
-            console.log(`Buscando en ${allSearchableIds.length} IDs de documentos únicos.`);
-            
-            // 2. Crear embedding y buscar chunks (se mantiene igual)
+            console.log(`Buscando en ${allSearchableIds.length} IDs de documentos.`);
+
+            // --- PUESTO DE CONTROL 1: EMBEDDING ---
+            console.log("Paso 1: Intentando crear embedding...");
             const queryEmbedding = await getEmbedding(userQuery);
-            const relevantChunks = await findRelevantChunksAcrossDocuments(queryEmbedding, allSearchableIds);
+            console.log("Paso 1: Embedding creado con éxito.");
             
-            // 3. Aumentar el contexto
+            // --- PUESTO DE CONTROL 2: BÚSQUEDA DE VECTORES ---
+            console.log("Paso 2: Intentando buscar chunks relevantes...");
+            const relevantChunks = await findRelevantChunksAcrossDocuments(queryEmbedding, allSearchableIds);
+            console.log(`Paso 2: Búsqueda de chunks finalizada. Encontrados: ${relevantChunks.length}`);
+
             if (relevantChunks.length > 0) {
-                console.log(`Se encontraron ${relevantChunks.length} chunks relevantes.`);
-                const contextString = `--- INICIO DEL CONTEXTO ---\n${relevantChunks.join("\n---\n")}\n--- FIN DEL CONTEXTO ---\n\nBasándote **únicamente** en el contexto proporcionado, responde a la siguiente pregunta. Si la respuesta no está en el contexto, di que no tienes suficiente información. Pregunta: ${userQuery}`;
-                
-                // Actualizamos el texto de la última parte del historial (la pregunta del usuario)
+                const contextString = `--- CONTEXTO ---\n${relevantChunks.join("\n---\n")}\n--- FIN DEL CONTEXTO ---\n\nPregunta: ${userQuery}`;
                 contents[contents.length - 1].parts[0].text = contextString;
-            } else {
-                console.log("No se encontraron chunks relevantes para la consulta.");
             }
         }
 
-        // 4. Generar la respuesta con el modelo de IA
-        const chatSession = generativeModel.startChat({ 
-            history: contents.slice(0, -1)
-        });
-
-        // Enviamos la última parte del contenido, que puede haber sido modificada con el contexto
+        // --- PUESTO DE CONTROL 3: LLAMADA A LA IA ---
+        console.log("Paso 3: Intentando enviar mensaje a Gemini...");
+        const chatSession = generativeModel.startChat({ history: contents.slice(0, -1) });
         const result = await chatSession.sendMessage(contents[contents.length - 1].parts);
-        const botText = result.response.text();
+        console.log("Paso 3: Respuesta recibida de Gemini.");
 
-        // 5. Guardar el historial en Firestore y responder (se mantiene igual)
+        let botText = "No pude generar una respuesta.";
+        if (result.response?.candidates?.[0]?.content?.parts?.[0]?.text) {
+            botText = result.response.candidates[0].content.parts[0].text;
+        }
+
+        const userMessage = { sender: 'user', text: userQuery, timestamp: new Date() };
+        const botMessage = { sender: 'ai', text: botText, timestamp: new Date() };
+
+        // --- PUESTO DE CONTROL 4: ACTUALIZACIÓN DE FIRESTORE ---
+        console.log("Paso 4: Intentando actualizar Firestore...");
         await chatRef.update({
-            messages: admin.firestore.FieldValue.arrayUnion(
-                { sender: 'user', text: userQuery, timestamp: admin.firestore.FieldValue.serverTimestamp() },
-                { sender: 'ai', text: botText, timestamp: admin.firestore.FieldValue.serverTimestamp() }
-            ),
+            messages: admin.firestore.FieldValue.arrayUnion(userMessage, botMessage),
             updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
+        console.log("Paso 4: Firestore actualizado con éxito.");
 
         const updatedChatDoc = await chatRef.get();
+        // ... (lógica de formateo de respuesta)
         res.status(200).json({ updatedChat: { _id: updatedChatDoc.id, ...updatedChatDoc.data() } });
 
     } catch (error) {
-        console.error("[handleChatMessage] Error:", error);
+        // --- LOG DE ERROR DEFINITIVO ---
+        console.error("[handleChatMessage] ERROR CRÍTICO CAPTURADO:", error);
         res.status(500).json({ message: "Error inesperado en el servidor al procesar el mensaje." });
     }
 };
 
+        
+      
 
 
 const extractJson = async (req, res) => {
